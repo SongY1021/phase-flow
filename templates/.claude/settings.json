@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/session-start.py",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.py",
             "timeout": 30
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/session-end.py",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end.py",
             "timeout": 10
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/brainstorming-pre.py",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/brainstorming-pre.py",
             "timeout": 10
           }
         ]

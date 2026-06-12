@@ -3,10 +3,10 @@
 /**
  * PhaseFlow 安装逻辑
  *
- * 职责：
- * 1. 校验当前目录是否为合法项目根目录
- * 2. 把 templates/ 下的所有文件复制到当前项目目录
- * 3. 已存在的文件提示用户确认是否覆盖
+ * 三类文件，三种处理策略：
+ * - CLAUDE.md         → 追加合并（保留项目原有内容，末尾追加 PhaseFlow 内容）
+ * - settings.json     → 字段合并（只合并 hooks 字段，保留项目其他配置）
+ * - hooks / skills    → 询问是否覆盖（或 --force 直接覆盖）
  */
 
 const fs = require("fs");
@@ -18,6 +18,12 @@ const readline = require("readline");
 const TEMPLATE_DIR = path.join(__dirname, "..", "templates");
 const PROJECT_MARKERS = [".git", "package.json", "pom.xml", "build.gradle", "go.mod", "Cargo.toml"];
 
+// 需要特殊处理的文件（不走普通覆盖逻辑）
+const MERGE_STRATEGIES = {
+  "CLAUDE.md": "append",
+  ".claude/settings.json": "merge-hooks",
+};
+
 // ─── 工具函数 ────────────────────────────────────────────────────────────────
 
 function isProjectRoot(dir) {
@@ -25,12 +31,115 @@ function isProjectRoot(dir) {
 }
 
 function isGlobalInstall() {
-  // npm install -g 时，npm_config_global 为 'true'
   return process.env.npm_config_global === "true";
 }
 
-function copyDirRecursive(src, dest, dryRun = false) {
-  const results = { copied: [], skipped: [], conflicts: [] };
+function relativePath(filePath, base) {
+  return path.relative(base, filePath);
+}
+
+function prompt(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase());
+    });
+  });
+}
+
+// ─── 合并策略 ────────────────────────────────────────────────────────────────
+
+/**
+ * CLAUDE.md：追加合并
+ * 在已有内容末尾追加分隔线 + PhaseFlow 内容
+ * 如果已经包含 PhaseFlow 标记，跳过（幂等）
+ */
+function appendClaudeMd(srcPath, destPath, dryRun) {
+  const PHASEFLOW_MARKER = "<!-- PhaseFlow -->";
+  const srcContent = fs.readFileSync(srcPath, "utf-8");
+  const destContent = fs.readFileSync(destPath, "utf-8");
+
+  if (destContent.includes(PHASEFLOW_MARKER)) {
+    console.log("   CLAUDE.md 已包含 PhaseFlow 内容，跳过");
+    return "skipped";
+  }
+
+  if (!dryRun) {
+    const separator = `\n\n---\n\n${PHASEFLOW_MARKER}\n`;
+    fs.writeFileSync(destPath, destContent + separator + srcContent, "utf-8");
+  }
+  return "merged";
+}
+
+/**
+ * settings.json：合并 hooks 字段
+ * 读取已有 settings.json，把 PhaseFlow 的 hooks 合并进去
+ * 已有的其他字段（permissions 等）完全保留
+ * 如果某个 hook 事件已存在，把 PhaseFlow 的条目追加进去（不替换）
+ */
+function mergeSettingsJson(srcPath, destPath, dryRun) {
+  let existing = {};
+  let phaseflow = {};
+
+  try {
+    existing = JSON.parse(fs.readFileSync(destPath, "utf-8"));
+  } catch {
+    existing = {};
+  }
+
+  try {
+    phaseflow = JSON.parse(fs.readFileSync(srcPath, "utf-8"));
+  } catch {
+    return "error";
+  }
+
+  const PHASEFLOW_MARKER = "__phaseflow__";
+
+  // 检查是否已经合并过（幂等）
+  const existingStr = JSON.stringify(existing);
+  if (existingStr.includes(PHASEFLOW_MARKER)) {
+    console.log("   .claude/settings.json 已包含 PhaseFlow hooks，跳过");
+    return "skipped";
+  }
+
+  if (!dryRun) {
+    const merged = { ...existing };
+
+    if (!merged.hooks) {
+      merged.hooks = {};
+    }
+
+    // 逐个事件类型合并
+    for (const [event, hookGroups] of Object.entries(phaseflow.hooks || {})) {
+      if (!merged.hooks[event]) {
+        merged.hooks[event] = [];
+      }
+      // 给每个 hook 条目打上 PhaseFlow 标记，用于幂等检查
+      const markedGroups = hookGroups.map((group) => ({
+        ...group,
+        [PHASEFLOW_MARKER]: true,
+        hooks: group.hooks.map((h) => ({ ...h, [PHASEFLOW_MARKER]: true })),
+      }));
+      merged.hooks[event].push(...markedGroups);
+    }
+
+    fs.writeFileSync(destPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+  }
+  return "merged";
+}
+
+// ─── 文件遍历 ────────────────────────────────────────────────────────────────
+
+/**
+ * 遍历 templates 目录，按文件类型分类
+ */
+function scanTemplates(templateDir, targetDir) {
+  const results = {
+    toCreate: [],    // 目标不存在，直接复制
+    toMerge: [],     // 需要合并策略处理
+    toConflict: [],  // 普通冲突，需用户确认
+  };
 
   function walk(srcDir, destDir) {
     fs.mkdirSync(destDir, { recursive: true });
@@ -42,43 +151,24 @@ function copyDirRecursive(src, dest, dryRun = false) {
 
       if (stat.isDirectory()) {
         walk(srcPath, destPath);
+        continue;
+      }
+
+      const rel = relativePath(destPath, targetDir);
+      const strategy = MERGE_STRATEGIES[rel];
+
+      if (!fs.existsSync(destPath)) {
+        results.toCreate.push({ src: srcPath, dest: destPath, rel });
+      } else if (strategy) {
+        results.toMerge.push({ src: srcPath, dest: destPath, rel, strategy });
       } else {
-        if (fs.existsSync(destPath)) {
-          results.conflicts.push(destPath);
-        } else {
-          if (!dryRun) {
-            fs.copyFileSync(srcPath, destPath);
-          }
-          results.copied.push(destPath);
-        }
+        results.toConflict.push({ src: srcPath, dest: destPath, rel });
       }
     }
   }
 
-  walk(src, dest);
+  walk(templateDir, targetDir);
   return results;
-}
-
-function overwriteFile(src, dest) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
-}
-
-function relativePath(filePath, base) {
-  return path.relative(base, filePath);
-}
-
-function prompt(question) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase());
-    });
-  });
 }
 
 // ─── 主流程 ──────────────────────────────────────────────────────────────────
@@ -94,8 +184,7 @@ async function install(targetDir, options = {}) {
     console.error("❌ PhaseFlow 不支持全局安装（npm install -g）");
     console.error("   请在项目根目录下使用本地安装：");
     console.error("   npm install --save-dev phase-flow");
-    console.error("   或者使用 npx：");
-    console.error("   npx phase-flow init");
+    console.error("   或者使用 npx：npx phase-flow init");
     process.exit(1);
   }
 
@@ -110,70 +199,89 @@ async function install(targetDir, options = {}) {
   }
 
   console.log(`📁 安装目标：${cwd}`);
+  if (dryRun) console.log("   （dry-run 模式，不会写入任何文件）");
+  console.log("");
 
-  if (dryRun) {
-    console.log("   （dry-run 模式，不会写入任何文件）\n");
+  // 3. 扫描所有文件，分类
+  const { toCreate, toMerge, toConflict } = scanTemplates(TEMPLATE_DIR, cwd);
+
+  const stats = { created: 0, merged: 0, overwritten: 0, skipped: 0 };
+
+  // 4. 直接创建新文件
+  for (const { src, dest } of toCreate) {
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(src, dest);
+    }
+    stats.created++;
   }
 
-  // 3. 复制文件，检测冲突
-  const { copied, conflicts } = copyDirRecursive(TEMPLATE_DIR, cwd, true); // 先 dry-run 探测
+  // 5. 合并策略处理（CLAUDE.md、settings.json）
+  if (toMerge.length > 0) {
+    console.log("📝 以下文件将进行合并（保留你的原有内容）：\n");
+    for (const { src, dest, rel, strategy } of toMerge) {
+      console.log(`   ${rel}`);
+      let result = "skipped";
+      if (strategy === "append") {
+        console.log(`   └─ 策略：追加到已有 CLAUDE.md 末尾`);
+        result = appendClaudeMd(src, dest, dryRun);
+      } else if (strategy === "merge-hooks") {
+        console.log(`   └─ 策略：合并 hooks 字段，保留其他配置`);
+        result = mergeSettingsJson(src, dest, dryRun);
+      }
+      if (result === "merged") stats.merged++;
+      else stats.skipped++;
+    }
+    console.log("");
+  }
 
-  // 4. 处理冲突文件
-  const toOverwrite = [];
-
-  if (conflicts.length > 0) {
+  // 6. 普通冲突文件处理（hooks / skills）
+  if (toConflict.length > 0) {
     if (force) {
-      // --force 模式直接全部覆盖
-      toOverwrite.push(...conflicts);
-      console.log(`⚠️  以下文件将被覆盖（--force 模式）：`);
-      conflicts.forEach((f) => console.log(`   ${relativePath(f, cwd)}`));
+      console.log("⚠️  以下文件将被覆盖（--force 模式）：\n");
+      for (const { src, dest, rel } of toConflict) {
+        console.log(`   ${rel}`);
+        if (!dryRun) {
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          fs.copyFileSync(src, dest);
+        }
+        stats.overwritten++;
+      }
       console.log("");
     } else {
-      console.log("⚠️  以下文件已存在，请选择处理方式：\n");
-      for (const conflictPath of conflicts) {
-        const rel = relativePath(conflictPath, cwd);
+      console.log("⚠️  以下文件已存在，是否覆盖？\n");
+      for (const { src, dest, rel } of toConflict) {
         const answer = await prompt(`   ${rel}\n   覆盖？[y/N] `);
         if (answer === "y" || answer === "yes") {
-          toOverwrite.push(conflictPath);
+          if (!dryRun) {
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.copyFileSync(src, dest);
+          }
+          stats.overwritten++;
         } else {
-          console.log(`   跳过 ${rel}`);
+          console.log(`   跳过`);
+          stats.skipped++;
         }
       }
       console.log("");
     }
   }
 
-  // 5. 执行实际写入
-  if (!dryRun) {
-    // 复制无冲突的新文件
-    copyDirRecursive(TEMPLATE_DIR, cwd, false);
-
-    // 覆盖用户确认的冲突文件
-    for (const destPath of toOverwrite) {
-      const relativeToDest = path.relative(cwd, destPath);
-      const srcPath = path.join(TEMPLATE_DIR, relativeToDest);
-      if (fs.existsSync(srcPath)) {
-        overwriteFile(srcPath, destPath);
-      }
-    }
-  }
-
-  // 6. 输出结果
-  const totalCopied = copied.length + toOverwrite.length;
-  const totalSkipped = conflicts.length - toOverwrite.length;
-
+  // 7. 输出结果
   console.log("─".repeat(50));
   console.log(`✅ PhaseFlow 安装完成\n`);
-  console.log(`   复制文件：${dryRun ? "(dry-run)" : totalCopied} 个`);
-  if (totalSkipped > 0) {
-    console.log(`   跳过文件：${totalSkipped} 个`);
+  if (!dryRun) {
+    console.log(`   新建文件：${stats.created} 个`);
+    if (stats.merged > 0)     console.log(`   合并文件：${stats.merged} 个（原有内容已保留）`);
+    if (stats.overwritten > 0) console.log(`   覆盖文件：${stats.overwritten} 个`);
+    if (stats.skipped > 0)    console.log(`   跳过文件：${stats.skipped} 个`);
   }
   console.log("");
   console.log("📋 已安装内容：");
-  console.log("   .claude/settings.json        ← Hooks 配置");
+  console.log("   .claude/settings.json        ← Hooks 配置（已合并）");
   console.log("   .claude/hooks/               ← SessionStart / SessionEnd / brainstorming-pre");
   console.log("   .claude/skills/              ← phase-split / plan / contract / handoff / verify");
-  console.log("   CLAUDE.md                    ← 框架分工与执行规则");
+  console.log("   CLAUDE.md                    ← 框架分工与执行规则（已追加）");
   console.log("");
   console.log("🎯 快速开始：");
   console.log("   1. 完成 gstack 决策阶段（arch-review + security-review + API 文档）");
