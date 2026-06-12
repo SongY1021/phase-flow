@@ -1,0 +1,4 @@
+# 开发文件，不发布到 npm
+.git/
+*.test.js
+.DS_Store

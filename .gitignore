@@ -1,0 +1,15 @@
+# PhaseFlow 运行时生成文件（项目特定，不纳入工具本身的版本控制）
+ROADMAP.md
+STATE.md
+PLAN.md
+docs/contracts/
+docs/handoffs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
