@@ -28,8 +28,8 @@ Phase 5：安全评审（/cso）                   → docs/security-review.md
 
 ```
 /phase-split
-→ ROADMAP.md（功能模块级路线图 + 验收标准）
-→ STATE.md（初始状态）
+→ docs/ROADMAP.md（功能模块级路线图 + 验收标准）
+→ docs/STATE.md（初始状态）
 ```
 
 ### Phase N（每个功能模块的标准循环）
