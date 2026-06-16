@@ -44,8 +44,11 @@ PhaseFlow 就是这个流程层。
 ---
 
 ## 安装
-
-将 `.claude/` 目录和 `CLAUDE.md` 复制到你的项目根目录：
+1. npx 安装
+```bash
+npx phase-flow init
+```
+2. 将 `.claude/` 目录和 `CLAUDE.md` 复制到你的项目根目录：
 
 ```bash
 cp -r .claude/ /your-project/.claude/
