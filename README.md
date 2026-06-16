@@ -2,7 +2,7 @@
 
 > Claude Code 流程驱动开发的 Skills & Hooks 工具集
 
-PhaseFlow 是一套为 **gstack + Superpowers** 工作流设计的 Skills 和 Hooks，解决流程驱动模式的两个核心问题：
+PhaseFlow 是一套为 **Claude Code + Superpowers** 工作流设计的 Skills 和 Hooks，解决流程驱动模式的两个核心问题：
 
 - **Phase 衔接**：Phase 拆分标准化 + 技术层执行序列 + 状态持久化追踪
 - **上下文管理**：契约精准传递 + 中断精确恢复
@@ -37,7 +37,8 @@ PhaseFlow 就是这个流程层。
 
 | Hook | 触发时机 | 职责 |
 |------|----------|------|
-| `session-start` | 每次新会话启动 | 注入当前 Phase 状态 + PLAN，检测中断文件 |
+| `session-start` | 每次新会话启动 | 注入当前 Phase 状态 + PLAN，解析上次会话记录 |
+| `session-end` | 每次会话结束 | 自动记录 transcript_path 和当前执行状态 |
 | `brainstorming-pre` | Superpowers /brainstorming 前 | 注入架构约束 + 层间/跨模块 contract |
 
 ---
@@ -97,9 +98,10 @@ cp CLAUDE.md /your-project/CLAUDE.md
 
 ```
 .claude/
-├── hooks.json                          # hooks 配置
+├── settings.json                       # hooks 配置
 ├── hooks/
 │   ├── session-start.py               # 会话启动恢复 hook
+│   ├── session-end.py                 # 会话结束自动记录 hook
 │   └── brainstorming-pre.py           # brainstorming 前置注入 hook
 └── skills/
     ├── phase-split/SKILL.md

@@ -1,6 +1,6 @@
 {
   "name": "phase-flow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Claude Code 流程驱动开发的 Skills & Hooks 工具集",
   "keywords": ["claude-code", "ai-coding", "workflow", "skills", "hooks"],
   "homepage": "https://github.com/SongY1021/phase-flow",
